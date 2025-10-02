@@ -3,6 +3,12 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from PIL import Image, ImageTk
 
+import torch
+import numpy as np
+from segment_anything import sam_model_registry, SamPredictor
+import cv2
+
+
 class VisualizadorImagens:
     def __init__(self, master):
         self.master = master
@@ -15,7 +21,7 @@ class VisualizadorImagens:
         self.botao_pasta = tk.Button(self.frame_lista, text="Selecionar Pasta", command=self.carregar_pasta)
         self.botao_pasta.pack(pady=10)
 
-        self.lista = tk.Listbox(self.frame_lista, width=40)
+        self.lista = tk.Listbox(self.frame_lista, width=20)
         self.lista.pack(fill=tk.BOTH, expand=True)
         self.lista.bind("<<ListboxSelect>>", self.exibir_imagem)
 
@@ -53,6 +59,15 @@ class VisualizadorImagens:
 
         # Imagem gerada pelo SAM (placeholder)
         self.imagem_sam = None
+
+        # Inicializa o SAM aqui (use o modelo ViT-H e checkpoint local ou baixe antes)
+        sam_checkpoint = "models/sam_vit_h_4b8939.pth"  # ajuste o caminho se necessário
+        model_type = "vit_h"
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+        self.sam.to(self.device)
+        self.predictor = SamPredictor(self.sam)
 
         # Eventos de desenho
         self.canvas.bind("<Button-1>", self.iniciar_desenho)
@@ -140,9 +155,41 @@ class VisualizadorImagens:
             messagebox.showwarning("Aviso", "Nenhuma imagem selecionada.")
             return
 
-        # Aqui você insere a chamada real ao SAM
-        # Por enquanto, copia a imagem como "segmentada"
-        self.imagem_sam = self.imagem_atual.copy()
+        # Converte imagem PIL para numpy (RGB)
+        imagem_np = np.array(self.imagem_atual.convert("RGB"))
+
+        # Configura o predictor com a imagem
+        self.predictor.set_image(imagem_np)
+
+        altura, largura = imagem_np.shape[:2]
+
+        # Define o ponto central para segmentação
+        ponto_central = np.array([[largura // 2, altura // 2]])
+        label_ponto = np.array([1])  # 1 = ponto positivo (foreground)
+
+        # Executa predição para esse ponto (uma máscara só)
+        masks, scores, logits = self.predictor.predict(
+            point_coords=ponto_central,
+            point_labels=label_ponto,
+            multimask_output=False
+        )
+
+        mask = masks[0]  # máscara binária (bool)
+
+        # Cria imagem RGBA para sobrepor máscara na imagem original
+        imagem_com_mask = cv2.cvtColor(imagem_np, cv2.COLOR_RGB2RGBA)
+
+        # Define a máscara vermelha semi-transparente (alpha = 128)
+        imagem_com_mask[mask] = (0, 0, 0, 255)
+
+        # Converte para PIL para exibir no Tkinter
+        self.imagem_sam = Image.fromarray(imagem_com_mask)
+
+        # Atualiza o canvas
+        self.canvas.delete("all")
+        self.imagem_tk = ImageTk.PhotoImage(self.imagem_sam)
+        self.canvas.config(width=self.imagem_tk.width(), height=self.imagem_tk.height())
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.imagem_tk)
 
         # Exibe os widgets para confirmar classe
         self.label_classe.pack(pady=5)
